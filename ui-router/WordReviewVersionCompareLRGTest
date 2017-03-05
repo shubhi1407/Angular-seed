@@ -1,0 +1,1248 @@
+/* Copyright (c) 2016, 2017, Oracle and/or its affiliates. 
+All rights reserved.*/
+
+package oracle.epm.platform.core.reportpackage.vercompare.impl.pdf;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+import oracle.adf.share.ADFContext;
+
+import oracle.epm.platform.core.common.exception.ObjectNotFoundException;
+import oracle.epm.platform.core.reportpackage.Doclet;
+import oracle.epm.platform.core.reportpackage.DocletKind;
+import oracle.epm.platform.core.reportpackage.FileContent;
+import oracle.epm.platform.core.reportpackage.RPItem;
+import oracle.epm.platform.core.reportpackage.RPSaveConfirmationType;
+import oracle.epm.platform.core.reportpackage.ReportPackage;
+import oracle.epm.platform.core.reportpackage.ReportPackageManager;
+import oracle.epm.platform.core.reportpackage.ReportPackageType;
+import oracle.epm.platform.core.reportpackage.ReviewCycle;
+import oracle.epm.platform.core.reportpackage.anchor.AnchorAssemblyFactory;
+import oracle.epm.platform.core.reportpackage.anchor.PdfAnchorAssembly;
+import oracle.epm.platform.core.reportpackage.commenting.impl.ReportPackageSampleData;
+import oracle.epm.platform.core.reportpackage.test.base.BaseLRGSpringLiteTest;
+import oracle.epm.platform.core.reportpackage.test.base.LRGTester;
+import oracle.epm.platform.core.reportpackage.util.DocletUtils;
+import oracle.epm.platform.core.reportpackage.util.ReportPackageTestHelper;
+import oracle.epm.platform.core.reportpackage.util.ReportPackageTestUtils;
+import oracle.epm.platform.core.reportpackage.vercompare.ChangeKind;
+import oracle.epm.platform.core.reportpackage.vercompare.ChangeSpan;
+import oracle.epm.platform.core.reportpackage.vercompare.ChangeSpan.Type;
+import oracle.epm.platform.core.reportpackage.vercompare.PageSpan;
+import oracle.epm.platform.core.reportpackage.vercompare.PdfVersionCompare;
+import oracle.epm.platform.core.reportpackage.vercompare.VersionCompareFactory;
+import oracle.epm.platform.core.reportpackage.vercompare.impl.util.VersionCompareTestUtils;
+import oracle.epm.platform.core.security.model.Identity;
+import oracle.epm.platform.core.security.util.LoginUtil;
+import oracle.epm.testing.junit.categories.LongRunTests;
+
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang.Validate;
+
+import org.junit.After;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import org.junit.Before;
+import org.junit.ClassRule;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.experimental.categories.Category;
+import org.junit.rules.ExpectedException;
+import org.junit.rules.TestRule;
+
+import org.springframework.test.context.ContextConfiguration;
+
+
+/**
+ * LRG JUnit tests for the {@link PdfVersionCompare} implementation for the Word review.
+ */
+@Category(LongRunTests.class)
+@ContextConfiguration(locations = BaseLRGSpringLiteTest.SPRING_CONFIG_LOCATION)
+public class WordReviewVersionCompareLRGTest extends BaseWordReviewVersionCompareTest {
+    /**
+     * Allows the LRG environment to be configured to run tests.
+     **/
+    @ClassRule
+    public static final LRGTester LRG_TESTER = new LRGTester(WordReviewVersionCompareLRGTest.class);
+
+    /**
+     * Enables the LRG environment to be configured for each method in the test.
+     */
+    @Rule
+    public final TestRule testerInstance = LRG_TESTER.forInstance(this);
+
+    /**
+     * To check for the expected exceptions and their error messages.
+     */
+    @Rule
+    public final ExpectedException expectedException = ExpectedException.none();
+
+    /*
+     * Test Data Constants.
+     */
+    private static final String DOCLET_FILE_EXTENTSION = ".docx";
+
+    // Doclet data.
+    private static final String DOCLET1_NAME = DOCLET1_ID;
+    private static final String DOCLET2_NAME = DOCLET2_ID;
+    private static final String DOCLET3_NAME = DOCLET3_ID;
+    private static final String DOCLET4_NAME = DOCLET4_ID;
+    private static final String DOCLET5_NAME = DOCLET5_ID;
+    private static final String DOCLET6_NAME = DOCLET6_ID;
+    private static final String DOCLET7_NAME = DOCLET7_ID;
+    private static final String DOCLET8_NAME = DOCLET8_ID;
+    private static final String DOCLET9_NAME = DOCLET9_ID;
+    private static final String DOCLET10_NAME = DOCLET10_ID;
+
+    /*
+     * Report Package data used by the testcases.
+     */
+    private ReportPackage rp = null;
+    private String rpId = null;
+    private String currentReviewId = null;
+    private String previousReviewId = null;
+
+    /*
+     * Report Package helper instances.
+     */
+    private ReportPackageTestHelper helper = LRG_TESTER.getReportPackageTestHelper();
+    private ReportPackageSampleData data = new ReportPackageSampleData(helper);
+
+    /**
+     * Roles with users ids to use for testing.
+     */
+    private enum RolesToTest {
+        RPO("Administrator"),
+        RP_VIEWER("user1"),
+        AUTHOR("user2"),
+        APPROVER("user3"),
+        RP_REVIEWER("user4");
+
+        private static Map<String, Identity> usersMap;
+        private static final long serialVersionUID = 1L;
+        private final String userId;
+        private Identity userIdentity = null;
+
+        RolesToTest(String userId) {
+            this.userId = userId;
+        }
+
+        String getUserId() {
+            return this.userId;
+        }
+
+        Identity getUser() {
+            if (userIdentity == null) {
+                this.userIdentity = findUser(userId);
+            }
+            return this.userIdentity;
+        }
+
+        private Identity findUser(String userName) {
+            Validate.notEmpty(userName, "Username must be provided!");
+
+            Identity userFound = usersMap.get(userName);
+            if (userFound == null) {
+                throw new IllegalStateException("Unable to find user '" + userName + "'.");
+            }
+            return userFound;
+        }
+    }
+
+    /**
+     * Setup to be done before each test method.
+     * @throws Exception if some error occurs in setup.
+     */
+    @Before
+    public void setUp() {
+        login(RolesToTest.RPO.getUserId());
+        // Check user roles.
+        if (RolesToTest.usersMap == null) {
+            RolesToTest.usersMap = ReportPackageTestHelper.getUsers();
+            for (RolesToTest role : RolesToTest.values()) {
+                // Make sure the users are good
+                assertNotNull("Unable to find user " + role.getUserId(), role.getUser());
+            }
+        }
+    }
+
+
+    /**
+     * Cleanup to be done after each test method.
+     */
+    @After
+    public void tearDown() {
+        if (rpId != null) {
+            login(RolesToTest.RPO.getUserId());
+            ReportPackage rp;
+            try {
+                rp = ReportPackageManager.getInstance().loadReportPackage(rpId);
+                rp.delete();
+            } catch (ObjectNotFoundException e) {
+                e = null; // Report Package must have already been deleted.
+            }
+        }
+        // Logout once the test is done.
+        LoginUtil.logout();
+    }
+
+    /*****************************************************************************************************
+     * Helper classes and methods for building the test data.
+     ****************************************************************************************************/
+
+    /**
+     * Creates a new report package with the given doclets data, it marks the construction phase as completed,
+     * it creates two review cycles and closes the first review cycle.
+     * @param docletSpecList doclet spec list.
+     * <p>The doclet spec list is a double dimensional array, where each array item
+     * in the double dimensional array is specified in the following way:
+     * <p><p><b>{ Doclet Name (String), Doclet Byte Data }</b>
+     * <p><p>The first item in the each array item should be doclet name string and the second item should be doclet byte data.
+     * <p><p>Each array item size should be of size 2.
+     */
+    private void createAndSetupReportPackage(Object[][] docletSpecList) {
+        // Create a new report package.
+        ReportPackage rp = data.createReportPackage();
+        data.assignRpOwner(rp, RolesToTest.RPO.getUser());
+        data.assignRpViewer(rp, RolesToTest.RP_VIEWER.getUser());
+        data.enableConstructionPhaseForRP(rp); // Enable construction phase.
+        data.enableReviewPhaseForRP(rp, 2); // Enable review phase with two review cycles.
+        data.assignTopLevelReviewerToAllReviews(rp, RolesToTest.RP_REVIEWER.getUser());
+        rp.save();
+
+        // Create doclets to the report package.
+        addDoclets(rp, docletSpecList);
+
+        // Mark construction phase complete.
+        data.markConstructionPhaseComplete(rp, true);
+
+        // Start and close first review cycle, that is, previous review cycle.
+        data.startReviewCycle(rp.getReviewPhase().getCycle(PREVIOUS_REVIEW_CYCLE_INDEX));
+        rp.save();
+        data.closeReviewCycle(rp);
+
+        // Assign the report package data used by the testcase.
+        this.rp = rp; // Assign the report package object once it is completely created and setup.
+        this.rpId = rp.getId();
+        this.currentReviewId = rp.getReviewPhase().getCycle(CURRENT_REVIEW_CYCLE_INDEX).getInstanceId();
+        this.previousReviewId = rp.getReviewPhase().getCycle(PREVIOUS_REVIEW_CYCLE_INDEX).getInstanceId();
+    }
+
+    /**
+     * Starts the current review cycle in the report package.
+     */
+    private void startCurrentReviewCycle() {
+        Validate.notNull(this.rp,
+                         "The report package is not yet created. At this point report package cannot be null. Some internal test logic error!");
+        ReviewCycle currentReviewCycle = this.rp.getReviewPhase().getCycle(CURRENT_REVIEW_CYCLE_INDEX);
+        data.startReviewCycle(currentReviewCycle);
+        this.rp.save();
+    }
+
+    /**
+     * Adds the given doclets to the given report package.
+     * @param rp report package.
+     * @param docletSpecList doclet spec list.
+     * <p>The doclet spec list is a double dimensional array, where each array item
+     * in the double dimensional array is specified in the following way:
+     * <p><p>
+     * <b>{ Doclet Name (String), Doclet Byte Data }</b>
+     * <p><p>
+     * The first item in the each array item should be doclet name string,
+     * the second item should be doclet byte data.
+     * Each array item size should be of size 2.
+     */
+    private void addDoclets(ReportPackage rp, Object[][] docletSpecList) {
+        Validate.notNull(rp, "The report package provided is null");
+        Validate.notNull(docletSpecList, "The doclet spec list provided is null");
+        Validate.isTrue(docletSpecList.length > 0, "The doclet spec list provided is empty");
+        Validate.noNullElements(docletSpecList, "The doclet spec list provided contains null values");
+        // Add the doclets to the report package.
+        List<Doclet> doclets = new ArrayList<>();
+        for (int specIndex = 0; specIndex < docletSpecList.length; specIndex++) {
+            Object[] docletSpec = docletSpecList[specIndex];
+            // Verify the doclet spec.
+            assertNotNull("Doclet spec at index " + specIndex + " is null", docletSpec);
+            assertEquals("Verify doclet spec size at index " + specIndex, 2, docletSpec.length);
+            // Add the doclet.
+            String docletName = (String)docletSpec[0];
+            byte[] docletData = (byte[])docletSpec[1];
+            Doclet doclet =
+                data.addDoclet(rp, docletName, new FileContent(docletData, docletName + DOCLET_FILE_EXTENTSION));
+            doclets.add(doclet);
+        }
+        // Assign roles to the doclets.
+        // Note that the role assignment calls such as assignAuthorToDoclet() and  assignApproverToDoclet() on ReportPackageSampleData class
+        // will internally starts the construction for the doclets if not already started.
+        // So this needs to be done after adding all the doclets to the report package.
+        for (Doclet doclet : doclets) {
+            data.assignAuthorToDoclet(rp, doclet.getId(), RolesToTest.AUTHOR.getUser());
+            data.assignApproverToDoclet(rp, doclet.getId(), RolesToTest.APPROVER.getUser());
+        }
+        rp.save();
+    }
+
+    /**
+     * Updates the given doclets to the report package.
+     * @param docletSpecList doclet spec list.
+     * <p>The doclet spec list is a double dimensional array, where each array item
+     * in the double dimensional array is specified in the following way:
+     * <p><p>
+     * <b>{ Doclet Name (String), Doclet Byte Data }</b>
+     * <p><p>
+     * The first item in the each array item should be doclet name string,
+     * the second item should be doclet byte data.
+     * Each array item size should be of size 2.
+     * @param startCurrentReviewCycle pass {@code true} to start the curent review cycle
+     * after updating the doclet contents in the report package.
+     * Otherwise pass {@code false}.
+     */
+    private void updateDoclets(Object[][] docletSpecList, boolean startCurrentReviewCycle) {
+        updateDoclets(docletSpecList);
+        if (startCurrentReviewCycle) {
+            startCurrentReviewCycle();
+        }
+    }
+
+    /**
+     * Updates the given doclets to the report package.
+     * @param docletSpecList doclet spec list.
+     * <p>The doclet spec list is a double dimensional array, where each array item
+     * in the double dimensional array is specified in the following way:
+     * <p><p>
+     * <b>{ Doclet Name (String), Doclet Byte Data }</b>
+     * <p><p>
+     * The first item in the each array item should be doclet name string,
+     * the second item should be doclet byte data.
+     * Each array item size should be of size 2.
+     */
+    private void updateDoclets(Object[][] docletSpecList) {
+        Validate.notNull(this.rp,
+                         "The report package is not yet created. At this point report package cannot be null. Some internal test logic error!");
+        Validate.notNull(docletSpecList, "The doclet spec list provided is null");
+        Validate.isTrue(docletSpecList.length > 0, "The doclet spec list provided is empty");
+        Validate.noNullElements(docletSpecList, "The doclet spec list provided contains null values");
+        // Update the doclet content to the report package.
+        for (int specIndex = 0; specIndex < docletSpecList.length; specIndex++) {
+            Object[] docletSpec = docletSpecList[specIndex];
+            // Verify the doclet spec.
+            assertNotNull("Doclet spec at index " + specIndex + " is null", docletSpec);
+            assertEquals("Verify doclet spec size at index " + specIndex, 2, docletSpec.length);
+            // Update the doclet content.
+            String docletName = (String)docletSpec[0];
+            byte[] docletData = (byte[])docletSpec[1];
+            try {
+                // Assign the refreshed report package after updating the doclet contents in the report package.
+                this.rp =
+                        ReportPackageTestUtils.updateDocletContent(this.rp, docletName, new FileContent(docletData, docletName +
+                                                                                                        DOCLET_FILE_EXTENTSION));
+            } catch (Exception e) {
+                throw new RuntimeException("Error while updating the content for doclet: " + docletName, e);
+            }
+        }
+    }
+
+    /**
+     * Inserts the given doclets to the report package.
+     * @param docletSpecList doclet spec list.
+     * <p>The doclet spec list is a double dimensional array, where each array item
+     * in the double dimensional array is specified in the following way:
+     * <p><p>
+     * <b>{ Doclet Name (String), Doclet Byte Data, Insert Before Doclet Name (String) }</b>
+     * <p><p>
+     * The first item in the each array item should be doclet name string,
+     * the second item should be doclet byte data and the third item should be insert before doclet name.
+     * Each array item size should be of size 3.
+     */
+    private void insertDoclets(Object[][] docletSpecList) {
+        Validate.notNull(this.rp,
+                         "The report package is not yet created. At this point report package cannot be null. Some internal test logic error!");
+        Validate.notNull(docletSpecList, "The doclet spec list provided is null");
+        Validate.isTrue(docletSpecList.length > 0, "The doclet spec list provided is empty");
+        // docletSpecList can contain null values. For example, the null value for the "insertBeforeDocletName" is used
+        // to indicate the condition of inserting the doclet at the end of the report package.
+
+        // Insert the doclets to the report package.
+        List<Doclet> doclets = new ArrayList<>();
+        for (int specIndex = 0; specIndex < docletSpecList.length; specIndex++) {
+            Object[] docletSpec = docletSpecList[specIndex];
+            // Verify the doclet spec.
+            assertNotNull("Doclet spec at index " + specIndex + " is null", docletSpec);
+            assertEquals("Verify doclet spec size at index " + specIndex, 3, docletSpec.length);
+            // Insert the doclet.
+            String docletName = (String)docletSpec[0];
+            byte[] docletData = (byte[])docletSpec[1];
+            String insertBeforeDocletName = (String)docletSpec[2];
+            Doclet doclet = insertDoclet(docletName, docletData, insertBeforeDocletName);
+            doclets.add(doclet);
+        }
+        // Assign roles to the doclets.
+        // Note that the role assignment calls such as assignAuthorToDoclet() and  assignApproverToDoclet() on ReportPackageSampleData class
+        // will internally starts the construction for the doclets if not already started.
+        // So this needs to be done after inserting all the doclets to the report package.
+        for (Doclet doclet : doclets) {
+            data.assignAuthorToDoclet(this.rp, doclet.getId(), RolesToTest.AUTHOR.getUser());
+            data.assignApproverToDoclet(this.rp, doclet.getId(), RolesToTest.APPROVER.getUser());
+        }
+        this.rp.save();
+    }
+
+    /**
+     * Inserts the given doclet before the given insert before doclet in the report package.
+     * <b>Note</b>: This method just adds the given doclet with given content, but it doesn't add roles to the doclet
+     * and it doesn't save the report package.
+     * @param docletName name of the doclet to be inserted.
+     * @param docletData content of the doclet to be inserted.
+     * @param insertBeforeDocletName name of the doclet before which the doclet will be inserted.
+     * If {@code null} is passed for this, then the doclet will be inserted at the end of the report package.
+     * @return the inserted doclet.
+     */
+    private Doclet insertDoclet(String docletName, byte[] docletData, String insertBeforeDocletName) {
+        Validate.notNull(this.rp,
+                         "The report package is not yet created. At this point report package cannot be null. Some internal test logic error!");
+        Validate.notEmpty(docletName, "The doclet name cannot be null or empty. Some internal test logic error!");
+        Validate.notNull(docletData,
+                         "At this point the doclet byte content cannot be null. Some internal test logic error!");
+        Validate.isTrue(docletData.length > 0,
+                        "At this point the doclet byte content cannot be null. Some internal test logic error!");
+        // insertBeforeDocletName can be null or empty to indicate the condition of inserting the doclet at the end of the report package.
+
+        // Load the insert before doclet.
+        String insertBeforeDocletId = null;
+        if (!StringUtils.isBlank(insertBeforeDocletName)) {
+            Doclet insertBeforeDoclet = ReportPackageTestUtils.getDocletByName(this.rp, insertBeforeDocletName);
+            Validate.notNull(insertBeforeDoclet,
+                             "Could not retrieve the insert before doclet: " + insertBeforeDocletName +
+                             ". It cannot be null at this point. Some internal test logic error!");
+            insertBeforeDocletId = insertBeforeDoclet.getId();
+        }
+
+        // Insert the doclet.
+        DocletKind kind =
+            DocletUtils.inferDocletKindFromDocletType(DocletUtils.getDocletTypeForRpType(this.rp.getReportPackageType()));
+        return data.addDocletBefore(this.rp, docletName,
+                                    new FileContent(docletData, docletName + DOCLET_FILE_EXTENTSION), kind,
+                                    insertBeforeDocletId, null,
+                                    RPSaveConfirmationType.ACTIVE_CONSTRUCTION_PHASE_DOCLET_ADDED);
+    }
+
+    /**
+     * Moves the given doclet before the given move before doclet.
+     * @param docletName name of the doclet to be moved.
+     * @param position position at which the doclet needs to be moved.
+     */
+    private void moveDoclet(String docletName, int position) {
+        Validate.notNull(this.rp,
+                         "The report package is not yet created. At this point report package cannot be null. Some internal test logic error!");
+        Validate.notEmpty(docletName, "The doclet name cannot be null or empty. Some internal test logic error!");
+        Validate.isTrue(position >= 0, "The position provided is negative");
+
+        // Load the doclet.
+        Doclet doclet = ReportPackageTestUtils.getDocletByName(this.rp, docletName);
+        Validate.notNull(doclet,
+                         "Could not retrieve the doclet to be moved: " + docletName + ". It cannot be null at this point. Some internal test logic error!");
+
+        // Move the doclet to the required position.
+        List<RPItem> items = new ArrayList<>();
+        items.add(doclet);
+        this.rp.moveItems(items, this.rp.getRootSection(), position);
+        this.rp.save();
+    }
+
+    /**
+     * Deletes the given doclet from the report package.
+     * @param docletName name of the doclet to be deleted.
+     */
+    private void deleteDoclet(String docletName) {
+        deleteDoclets(Collections.<String>singleton(docletName));
+    }
+
+    /**
+     * Deletes the given doclets from the report package.
+     * @param docletNames names of the doclet to be deleted.
+     */
+    private void deleteDoclets(Collection<String> docletNames) {
+        Validate.notNull(this.rp,
+                         "The report package is not yet created. At this point report package cannot be null. Some internal test logic error!");
+        Validate.notEmpty(docletNames,
+                          "The doclet names collection cannot be null or empty. Some internal test logic error!");
+        Validate.noNullElements(docletNames,
+                                "The doclet names collection contains null values. Some internal test logic error!");
+
+        // Load the doclet.
+        for (String docletName : docletNames) {
+            Doclet doclet = ReportPackageTestUtils.getDocletByName(this.rp, docletName);
+            Validate.notNull(doclet,
+                             "Could not retrieve the doclet to be deleted: " + docletName + ". It cannot be null at this point. Some internal test logic error!");
+            data.deleteDoclet(this.rp, doclet.getId());
+        }
+        this.rp.save();
+    }
+
+    /**
+     * Creates the {@code PdfVersionCompare} instance by comparing the previous and curren review instances.
+     * @return created {@code PdfVersionCompare} instance.
+     */
+    private PdfVersionCompare createPdfVersionCompare() {
+        Validate.notNull(this.rp,
+                         "The report package is not yet created. At this point report package cannot be null. Some internal test logic error!");
+        Validate.notEmpty(this.currentReviewId,
+                          "At this point the current review instance id cannot be null or empty. Some internal test logic error!");
+        Validate.notEmpty(this.previousReviewId,
+                          "At this point the previous review instance id cannot be null or empty. Some internal test logic error!");
+
+        // Get the current review instance content.
+        final ReviewCycle cycle = this.rp.getReviewPhase().getCycleByInstanceId(this.currentReviewId);
+        byte[] currentReviewInstanceContent = cycle.getReviewInstance().getBytes();
+        Validate.notNull(currentReviewInstanceContent,
+                         "At this point the current review instance byte content cannot be null. Some internal test logic error!");
+        Validate.isTrue(currentReviewInstanceContent.length > 0,
+                        "At this point the current review instance byte content cannot be null. Some internal test logic error!");
+
+        // Create PdfVersionCompare for Word review.
+        ReportPackageType rpType = this.rp.getReportPackageType();
+        PdfAnchorAssembly currentReviewPdfAnchorAssembly =
+            AnchorAssemblyFactory.createPdfAnchorAssembly(this.currentReviewId, currentReviewInstanceContent, rpType);
+        PdfVersionCompare pdfVersionCompare =
+            VersionCompareFactory.createPdfVersionCompareForReview(currentReviewPdfAnchorAssembly,
+                                                                   this.previousReviewId, COMPARE_CONTENT_OPTION,
+                                                                   rpType);
+        return pdfVersionCompare;
+    }
+
+    private static void login(String user) {
+        LoginUtil.logout();
+        // ADF request scope caches the report package when user tries to load the report package.
+        // Clear out the request scope between method calls to clear out the cache.
+        ADFContext.getCurrent().removeScope(ADFContext.REQUEST_SCOPE);
+        LoginUtil.login(user, ReportPackageTestHelper.PASSWORD_DEFAULT);
+    }
+
+    /*****************************************************************************************************
+     * Helper classes and methods for building expected list of ChangeSpan.
+     ****************************************************************************************************/
+
+    private List<ChangeSpan> getExpectedChangeSpans_ForTestCase_WithOneDoclet_WithContentChange() {
+        List<ChangeSpan> expectedChangeSpans = new ArrayList<>();
+        // Add expected ChangeSpan.
+        List<PageSpan> pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 72.0f, 1.0f, 26.937012f, 1));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 132.70697f, 1.0f, 64.09802f, 1));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 277.71204f, 1.0f, 26.946991f, 1));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 195.38403f, 1.0f, 29.799988f, 2));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 239.21596f, 1.0f, 7.278f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.DELETED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 521.553f, 1.0f, 4.0f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.DELETED, pageSpans));
+        return expectedChangeSpans;
+    }
+
+    private List<ChangeSpan> getExpectedChangeSpans_ForTestCase_WithMultipleDoclets_WithContentChanges() {
+        List<ChangeSpan> expectedChangeSpans = new ArrayList<>();
+        // Add expected ChangeSpan.
+        List<PageSpan> pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 72.0f, 1.0f, 26.937012f, 1));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 132.70697f, 1.0f, 64.09802f, 1));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 277.71204f, 1.0f, 26.946991f, 1));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 195.38403f, 1.0f, 29.799988f, 2));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 239.21596f, 1.0f, 31.33702f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.DELETED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 325.109f, 1.0f, 61.554016f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 123.581985f, 1.0f, 64.974533f, 4));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 242.133f, 1.0f, 38.03003f, 4)); // PageSpan 1                    
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 113.407974f, 1.0f, 38.827011f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 202.64996f, 1.0f, 19.867981f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.DELETED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 301.82797f, 1.0f, 22.342987f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 382.07898f, 1.0f, 52.815002f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 128.61798f, 1.0f, 53.039978f, 6));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 359.53845f, 1.0f, 31.21753f, 6));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 578.6365f, 1.0f, 70.30951f, 6));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 75.64649f, 1.0f, 31.217522f, 7));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 149.2845f, 1.0f, 21.217514f, 7));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 271.1065f, 1.0f, 86.218506f, 7));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 403.44598f, 1.0f, 6.615020f, 7));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 466.36646f, 1.0f, 35.76352f, 7));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 534.5505f, 1.0f, 257.44952f, 7),
+            new PdfPageSpan(62.0f, 0.0f, 1.0f, 230.04797f, 8));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 283.5385f, 1.0f, 99.58948f, 8));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 525.6595f, 1.0f, 74.81653f, 8));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 631.91046f, 1.0f, 6.671509f, 8));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.DELETED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 707.5505f, 1.0f, 7.243530f, 8));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.DELETED, pageSpans));
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 104.73847f, 1.0f, 92.49456f, 9));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 276.3845f, 1.0f, 6.671509f, 9));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.DELETED, pageSpans));
+        return expectedChangeSpans;
+    }
+
+    private List<ChangeSpan> getExpectedChangeSpans_ForTestCase_WithStructuralChanges_WithoutContentChanges() {
+        List<ChangeSpan> expectedChangeSpans = new ArrayList<>();
+        // Add expected ChangeSpan.
+        List<PageSpan> pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(52.0f, 281.0f, 1.0f, 5.0f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.STRUCTURAL, ChangeKind.DELETED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(52.0f, 181.0f, 1.0f, 611.0f, 4), // PageSpan 1
+                    new PdfPageSpan(52.0f, 0.0f, 1.0f, 555.0f, 5)); // PageSpan 2
+        expectedChangeSpans.add(new TestChangeSpan(Type.STRUCTURAL, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(52.0f, 189.0f, 1.0f, 5.0f, 6));
+        expectedChangeSpans.add(new TestChangeSpan(Type.STRUCTURAL, ChangeKind.DELETED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(52.0f, 368.0f, 1.0f, 424.0f, 6), // PageSpan 1
+                    new PdfPageSpan(52.0f, 0.0f, 1.0f, 792.0f, 7), // PageSpan 2
+                    new PdfPageSpan(52.0f, 0.0f, 1.0f, 152.0f, 8)); // PageSpan 3
+        expectedChangeSpans.add(new TestChangeSpan(Type.STRUCTURAL, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(52.0f, 537.0f, 1.0f, 255.0f, 8), // PageSpan 1
+                    new PdfPageSpan(52.0f, 0.0f, 1.0f, 792.0f, 9), // PageSpan 2
+                    new PdfPageSpan(52.0f, 0.0f, 1.0f, 792.0f, 10)); // PageSpan 3
+        expectedChangeSpans.add(new TestChangeSpan(Type.STRUCTURAL, ChangeKind.MODIFIED, pageSpans));
+        return expectedChangeSpans;
+    }
+
+    private List<ChangeSpan> getExpectedChangeSpans_ForTestCase_WithStructuralChanges_WithContentChanges() {
+        List<ChangeSpan> expectedChangeSpans = new ArrayList<>();
+        // Add expected ChangeSpan.
+        List<PageSpan> pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 72.0f, 1.0f, 26.937012f, 1));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 132.70697f, 1.0f, 64.09802f, 1));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 277.71204f, 1.0f, 26.946991f, 1));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 195.38403f, 1.0f, 29.799988f, 2));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 239.21596f, 1.0f, 31.33702f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.DELETED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(52.0f, 277.0f, 1.0f, 5.0f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.STRUCTURAL, ChangeKind.DELETED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 282.0f, 1.0f, 16.439026f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 348.85403f, 1.0f, 19.867981f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.DELETED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 448.032f, 1.0f, 22.342987f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 528.28296f, 1.0f, 52.815063f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 128.61798f, 1.0f, 28.109985f, 4));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(52.0f, 172.0f, 1.0f, 467.0f, 4));
+        expectedChangeSpans.add(new TestChangeSpan(Type.STRUCTURAL, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 639.0f, 1.0f, 9.945984f, 4));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 75.64649f, 1.0f, 31.217522f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 149.2845f, 1.0f, 21.217514f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 271.1065f, 1.0f, 21.217499f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(52.0f, 302.0f, 1.0f, 5.0f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.STRUCTURAL, ChangeKind.DELETED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 345.10046f, 1.0f, 35.76352f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 413.2845f, 1.0f, 96.58652f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(52.0f, 519.0f, 1.0f, 273.0f, 5), // PageSpan 1
+                    new PdfPageSpan(52.0f, 0.0f, 1.0f, 792.0f, 6), // PageSpan 2
+                    new PdfPageSpan(52.0f, 0.0f, 1.0f, 792.0f, 7), // PageSpan 3
+                    new PdfPageSpan(52.0f, 0.0f, 1.0f, 136.0f, 8)); // PageSpan 4
+        expectedChangeSpans.add(new TestChangeSpan(Type.STRUCTURAL, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 566.863f, 1.0f, 61.554016f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 123.581985f, 1.0f, 64.97453f, 7));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 242.133f, 1.0f, 38.03003f, 7));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 113.407974f, 1.0f,239.386f, 8));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 406.2845f, 1.0f, 80.5365f, 8));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(52.0f, 496.0f, 1.0f, 296.0f, 8), // PageSpan 1
+                    new PdfPageSpan(52.0f, 0.0f, 1.0f, 792.0f, 9)); // PageSpan 2
+        expectedChangeSpans.add(new TestChangeSpan(Type.STRUCTURAL, ChangeKind.MODIFIED, pageSpans));
+        return expectedChangeSpans;
+    }
+
+    private List<ChangeSpan> getExpectedChangeSpans_ForTestCase_WithContentChanges_WithHiddenImagesInCurrentReview() {
+        List<ChangeSpan> expectedChangeSpans = new ArrayList<>();
+        // Add expected ChangeSpan.
+        List<PageSpan> pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 72.0f, 1.0f, 99.0f, 1));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 196.92795f, 1.0f, 595.072f, 1), // PageSpan 1
+                    new PdfPageSpan(62.0f, 0.0f, 1.0f, 172.40698f, 2)); // PageSpan 2
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 0.0f, 1.0f, 60.546f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 731.454f, 1.0f, 60.54602f, 3));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 0.0f, 1.0f, 60.546f, 4));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 731.454f, 1.0f, 60.54602f, 4));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 0.0f, 1.0f, 60.546f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 731.454f, 1.0f, 60.54602f, 5));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 0.0f, 1.0f, 60.546f, 6));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 244.41898f, 1.0f, 19.446014f, 6));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 446.03848f, 1.0f, 26.219513f, 6));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 731.454f, 1.0f, 60.54602f, 6));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 0.0f, 1.0f, 60.546f, 7));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 731.454f, 1.0f, 60.54602f, 7));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 0.0f, 1.0f, 60.546f, 8));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 731.454f, 1.0f, 60.54602f, 8));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 0.0f, 1.0f, 60.546f, 9));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 731.454f, 1.0f, 60.54602f, 9));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 0.0f, 1.0f, 60.546f, 10));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 731.454f, 1.0f, 60.54602f, 10));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 0.0f, 1.0f, 60.546f, 11));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 731.454f, 1.0f, 60.54602f, 11));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 0.0f, 1.0f, 60.546f, 12));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 731.454f, 1.0f, 60.54602f, 12));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 0.0f, 1.0f, 60.546f, 13));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        // Add expected ChangeSpan.
+        pageSpans = Arrays.<PageSpan>asList(new PdfPageSpan(62.0f, 731.454f, 1.0f, 60.54602f, 13));
+        expectedChangeSpans.add(new TestChangeSpan(Type.CONTENT, ChangeKind.MODIFIED, pageSpans));
+        return expectedChangeSpans;
+    }
+
+    /*****************************************************************************************************
+     * Testcases for various doclets data.
+     ****************************************************************************************************/
+
+    /**
+     * Test version compare with current and previous reviews containing one doclet
+     * with no version change between the current and previous reviews.
+     */
+    @Test
+    public void testVersionCompare_WithOneDoclet_WithNoDocletVersionChange() {
+        // Create doclet spec list for previous and current review instances.
+        Object[][] previousReviewDocletSpecList = new Object[][] { // Previous review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_DATA } // Doclet 1
+                } ;
+
+        // Create and setup report package for this testcase.
+        createAndSetupReportPackage(previousReviewDocletSpecList);
+        startCurrentReviewCycle(); // Start current review cycle without updating the doclet contents.
+
+        // Run the testcase.
+        PdfVersionCompare pdfVersionCompare = createPdfVersionCompare();
+        List<ChangeBox> actualChangeBoxes = getChangeBoxes(pdfVersionCompare);
+        List<ChangeSpan> actualChangeSpans = pdfVersionCompare.getChangeSpans();
+
+        // Perform ChangeBox and ChangeSpan count verifications.
+        verifyTotalComputedChangeBoxesCount(actualChangeBoxes, 0);
+        verifyComputedChangeSpanCount(actualChangeSpans, 0);
+    }
+
+    /**
+     * Test version compare with current and previous reviews containing one doclet
+     * without content change between the current and previous reviews.
+     * In this testcase the doclet version is changed in the current review, but doclet content didn't change.
+     */
+    @Test
+    public void testVersionCompare_WithOneDoclet_WithoutContentChange() {
+        // Create doclet spec list for previous and current review instances.
+        Object[][] previousReviewDocletSpecList = new Object[][] { // Previous review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_DATA } // Doclet 1
+                } ;
+        Object[][] currentReviewDocletSpecList = new Object[][] { // Current review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_DATA } // Doclet 1
+                } ;
+
+        // Create and setup report package for this testcase.
+        createAndSetupReportPackage(previousReviewDocletSpecList);
+        updateDoclets(currentReviewDocletSpecList, true);
+
+        // Run the testcase.
+        PdfVersionCompare pdfVersionCompare = createPdfVersionCompare();
+        List<ChangeBox> actualChangeBoxes = getChangeBoxes(pdfVersionCompare);
+        List<ChangeSpan> actualChangeSpans = pdfVersionCompare.getChangeSpans();
+
+        // Perform ChangeBox and ChangeSpan count verifications.
+        verifyTotalComputedChangeBoxesCount(actualChangeBoxes, 0);
+        verifyComputedChangeSpanCount(actualChangeSpans, 0);
+    }
+
+    /**
+     * Test version compare with current and previous reviews containing one doclet
+     * with content change between the current and previous reviews.
+     */
+    @Test
+    public void testVersionCompare_WithOneDoclet_WithContentChange() {
+        // Create doclet spec list for previous and current review instances.
+        Object[][] previousReviewDocletSpecList = new Object[][] { // Previous review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_DATA } // Doclet 1
+                } ;
+        Object[][] currentReviewDocletSpecList = new Object[][] { // Current review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_MODIFIED_DATA } // Doclet 1
+                } ;
+
+        // Create and setup report package for this testcase.
+        createAndSetupReportPackage(previousReviewDocletSpecList);
+        updateDoclets(currentReviewDocletSpecList, true);
+
+        // Run the testcase.
+        PdfVersionCompare pdfVersionCompare = createPdfVersionCompare();
+        List<ChangeBox> actualChangeBoxes = getChangeBoxes(pdfVersionCompare);
+        List<ChangeSpan> actualChangeSpans = pdfVersionCompare.getChangeSpans();
+
+        // Perform ChangeBox and ChangeSpan count verifications.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "0", DOCLET1_EXPECTED_CHANGE_BOX_COUNTS);
+        verifyComputedDocletChangeBoxesCount(actualChangeBoxes, 0);
+        verifyTotalComputedChangeBoxesCount(actualChangeBoxes, 10);
+        verifyComputedChangeSpanCount(actualChangeSpans, 6);
+
+        // Perform ChangeSpan data verifications.
+        List<ChangeSpan> expectedChangeSpans = getExpectedChangeSpans_ForTestCase_WithOneDoclet_WithContentChange();
+        VersionCompareTestUtils.verifyChangeSpans(expectedChangeSpans, actualChangeSpans, 6);
+    }
+
+    /**
+     * Test version compare with current and previous reviews containing multiple doclets
+     * with no version change between the current and previous reviews.
+     */
+    @Test
+    public void testVersionCompare_WithMultipleDoclets_WithNoDocletVersionChanges() {
+        // Create doclet snapshot spec list for previous and current review instances.
+        Object[][] previousReviewDocletSpecList = new Object[][] { // Previous review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_DATA }, // Doclet 1
+                { DOCLET2_NAME, DOCLET2_DATA }, // Doclet 2
+                { DOCLET3_NAME, DOCLET3_DATA }, // Doclet 3
+                { DOCLET4_NAME, DOCLET4_DATA }, // Doclet 4
+                { DOCLET5_NAME, DOCLET5_DATA }, // Doclet 5
+                { DOCLET6_NAME, DOCLET6_DATA }, // Doclet 6
+                { DOCLET7_NAME, DOCLET7_DATA }, // Doclet 7
+                { DOCLET8_NAME, DOCLET8_DATA }, // Doclet 8
+                { DOCLET9_NAME, DOCLET9_DATA } // Doclet 9
+                } ;
+
+        // Create and setup report package for this testcase.
+        createAndSetupReportPackage(previousReviewDocletSpecList);
+        startCurrentReviewCycle(); // Start current review cycle without updating the doclet contents.
+
+        // Run the testcase.
+        PdfVersionCompare pdfVersionCompare = createPdfVersionCompare();
+        List<ChangeBox> actualChangeBoxes = getChangeBoxes(pdfVersionCompare);
+        List<ChangeSpan> actualChangeSpans = pdfVersionCompare.getChangeSpans();
+
+        // Perform ChangeBox and ChangeSpan count verifications.
+        verifyTotalComputedChangeBoxesCount(actualChangeBoxes, 0);
+        verifyComputedChangeSpanCount(actualChangeSpans, 0);
+    }
+
+    /**
+     * Test version compare with current and previous reviews containing multiple doclets
+     * without content changes between the current and previous reviews.
+     * In this testcase, the version is changed for all the doclets in the current review,
+     * but the content didn't change for any doclet.
+     */
+    @Test
+    public void testVersionCompare_WithMultipleDoclets_WithoutContentChanges() {
+        // Create doclet snapshot spec list for previous and current review instances.
+        Object[][] previousReviewDocletSpecList = new Object[][] { // Previous review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_DATA }, // Doclet 1
+                { DOCLET2_NAME, DOCLET2_DATA }, // Doclet 2
+                { DOCLET3_NAME, DOCLET3_DATA }, // Doclet 3
+                { DOCLET4_NAME, DOCLET4_DATA }, // Doclet 4
+                { DOCLET5_NAME, DOCLET5_DATA }, // Doclet 5
+                { DOCLET6_NAME, DOCLET6_DATA }, // Doclet 6
+                { DOCLET7_NAME, DOCLET7_DATA }, // Doclet 7
+                { DOCLET8_NAME, DOCLET8_DATA }, // Doclet 8
+                { DOCLET9_NAME, DOCLET9_DATA } // Doclet 9
+                } ;
+        Object[][] currentReviewDocletSpecList = new Object[][] { // Current review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_DATA }, // Doclet 1
+                { DOCLET2_NAME, DOCLET2_DATA }, // Doclet 2
+                { DOCLET3_NAME, DOCLET3_DATA }, // Doclet 3
+                { DOCLET4_NAME, DOCLET4_DATA }, // Doclet 4
+                { DOCLET5_NAME, DOCLET5_DATA }, // Doclet 5
+                { DOCLET6_NAME, DOCLET6_DATA }, // Doclet 6
+                { DOCLET7_NAME, DOCLET7_DATA }, // Doclet 7
+                { DOCLET8_NAME, DOCLET8_DATA }, // Doclet 8
+                { DOCLET9_NAME, DOCLET9_DATA } // Doclet 9
+                } ;
+
+        // Create and setup report package for this testcase.
+        createAndSetupReportPackage(previousReviewDocletSpecList);
+        updateDoclets(currentReviewDocletSpecList, true);
+
+        // Run the testcase.
+        PdfVersionCompare pdfVersionCompare = createPdfVersionCompare();
+        List<ChangeBox> actualChangeBoxes = getChangeBoxes(pdfVersionCompare);
+        List<ChangeSpan> actualChangeSpans = pdfVersionCompare.getChangeSpans();
+
+        // Perform ChangeBox and ChangeSpan count verifications.
+        verifyTotalComputedChangeBoxesCount(actualChangeBoxes, 0);
+        verifyComputedChangeSpanCount(actualChangeSpans, 0);
+    }
+
+    /**
+     * Test version compare with current and previous reviews containing multiple doclets
+     * with content changes between the current and previous reviews.
+     */
+    @Test
+    public void testVersionCompare_WithMultipleDoclets_WithContentChanges() {
+        // Create doclet snapshot spec list for previous and current review instances.
+        Object[][] previousReviewDocletSpecList = new Object[][] { // Previous review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_DATA }, // Doclet 1
+                { DOCLET2_NAME, DOCLET2_DATA }, // Doclet 2
+                { DOCLET3_NAME, DOCLET3_DATA }, // Doclet 3
+                { DOCLET4_NAME, DOCLET4_DATA }, // Doclet 4
+                { DOCLET5_NAME, DOCLET5_DATA }, // Doclet 5
+                { DOCLET6_NAME, DOCLET6_DATA }, // Doclet 6
+                { DOCLET7_NAME, DOCLET7_DATA }, // Doclet 7
+                { DOCLET8_NAME, DOCLET8_DATA }, // Doclet 8
+                { DOCLET9_NAME, DOCLET9_DATA } // Doclet 9
+                } ;
+        Object[][] currentReviewDocletSpecList = new Object[][] { // Current review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_MODIFIED_DATA }, // Doclet 1
+                { DOCLET2_NAME, DOCLET2_MODIFIED_DATA }, // Doclet 2
+                { DOCLET3_NAME, DOCLET3_MODIFIED_DATA }, // Doclet 3
+                { DOCLET4_NAME, DOCLET4_MODIFIED_DATA }, // Doclet 4
+                { DOCLET5_NAME, DOCLET5_MODIFIED_DATA }, // Doclet 5
+                { DOCLET6_NAME, DOCLET6_MODIFIED_DATA }, // Doclet 6
+                { DOCLET7_NAME, DOCLET7_MODIFIED_DATA }, // Doclet 7
+                { DOCLET8_NAME, DOCLET8_MODIFIED_DATA }, // Doclet 8
+                { DOCLET9_NAME, DOCLET9_MODIFIED_DATA } // Doclet 9
+                } ;
+
+        // Create and setup report package for this testcase.
+        createAndSetupReportPackage(previousReviewDocletSpecList);
+        updateDoclets(currentReviewDocletSpecList, true);
+
+        // Run the testcase.
+        PdfVersionCompare pdfVersionCompare = createPdfVersionCompare();
+        List<ChangeBox> actualChangeBoxes = getChangeBoxes(pdfVersionCompare);
+        List<ChangeSpan> actualChangeSpans = pdfVersionCompare.getChangeSpans();
+
+        // Perform ChangeBox and ChangeSpan count verifications.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "0", DOCLET1_EXPECTED_CHANGE_BOX_COUNTS);
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "1", DOCLET2_EXPECTED_CHANGE_BOX_COUNTS);
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "2", DOCLET3_EXPECTED_CHANGE_BOX_COUNTS);
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "3", DOCLET4_EXPECTED_CHANGE_BOX_COUNTS);
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "4", DOCLET5_EXPECTED_CHANGE_BOX_COUNTS);
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "5", DOCLET6_EXPECTED_CHANGE_BOX_COUNTS);
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "6", DOCLET7_EXPECTED_CHANGE_BOX_COUNTS);
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "7", DOCLET8_EXPECTED_CHANGE_BOX_COUNTS);
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "8", DOCLET9_EXPECTED_CHANGE_BOX_COUNTS);
+        verifyComputedDocletChangeBoxesCount(actualChangeBoxes, 0);
+        verifyTotalComputedChangeBoxesCount(actualChangeBoxes, 53);
+        verifyComputedChangeSpanCount(actualChangeSpans, 27);
+
+        // Perform ChangeSpan data verifications.
+        List<ChangeSpan> expectedChangeSpans =
+            getExpectedChangeSpans_ForTestCase_WithMultipleDoclets_WithContentChanges();
+        VersionCompareTestUtils.verifyChangeSpans(expectedChangeSpans, actualChangeSpans, 27);
+    }
+
+    /**
+     * Test version compare with current and previous reviews containing structural changes
+     * between the current and previous reviews but without changes to the doclet contents.
+     */
+    @Test
+    public void testVersionCompare_WithStructuralChanges_WithoutContentChanges() {
+        // Create doclet snapshot spec list for previous and current review instances.
+        Object[][] previousReviewDocletSpecList = new Object[][] { // Previous review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_DATA }, // Doclet 1
+                { DOCLET2_NAME, DOCLET2_DATA }, // Doclet 2
+                { DOCLET3_NAME, DOCLET3_DATA }, // Doclet 3
+                { DOCLET5_NAME, DOCLET5_DATA }, // Doclet 5
+                { DOCLET6_NAME, DOCLET6_DATA }, // Doclet 6
+                { DOCLET7_NAME, DOCLET7_DATA }, // Doclet 7
+                { DOCLET8_NAME, DOCLET8_DATA } // Doclet 8
+                } ;
+        Object[][] currentReviewDocletSpecList = new Object[][] { // Current review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_DATA }, // Doclet 1
+                { DOCLET3_NAME, DOCLET3_DATA }, // Doclet 3
+                // Doclet 4 will be added here.
+                { DOCLET5_NAME, DOCLET5_DATA }, // Doclet 5
+                // Doclet 6 will be deleted from here.
+                { DOCLET7_NAME, DOCLET7_DATA }, // Doclet 7
+                { DOCLET2_NAME, DOCLET2_DATA }, // Doclet 2 will be moved here.
+                { DOCLET8_NAME, DOCLET8_DATA } // Doclet 8
+                // Doclet 9 will be added here.
+                } ;
+        // Insert doclets in the current review instance.
+        Object[][] currentReviewInsertDocletSpecList = new Object[][] { // Insert doclet spec list
+                { DOCLET4_NAME, DOCLET4_DATA, DOCLET5_NAME }, // Insert Doclet 4 before Doclet 5
+                { DOCLET9_NAME, DOCLET9_DATA, null } // Insert Doclet 9 at the end of the review.
+                } ;
+
+        // Create and setup report package for this testcase.
+        createAndSetupReportPackage(previousReviewDocletSpecList);
+        updateDoclets(currentReviewDocletSpecList, false);
+        insertDoclets(currentReviewInsertDocletSpecList);
+        // For some reason Doclet 4 is not getting inserted before Doclet 5, so moving it before the Doclet 5.
+        moveDoclet(DOCLET4_NAME, 3);
+        moveDoclet(DOCLET2_NAME, 6);
+        deleteDoclet(DOCLET6_NAME);
+        startCurrentReviewCycle();
+
+        // Run the testcase.
+        PdfVersionCompare pdfVersionCompare = createPdfVersionCompare();
+        List<ChangeBox> actualChangeBoxes = getChangeBoxes(pdfVersionCompare);
+        List<ChangeSpan> actualChangeSpans = pdfVersionCompare.getChangeSpans();
+
+        // Perform ChangeBox and ChangeSpan count verifications.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "0",
+                                      NO_CHANGE_BOX_COUNTS); // Doclet 1 - no change to the content.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "1",
+                                      NO_CHANGE_BOX_COUNTS); // Doclet 3 - no change to the content.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "2",
+                                      NO_CHANGE_BOX_COUNTS); // Doclet 4 is inserted, so no content change.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "3",
+                                      NO_CHANGE_BOX_COUNTS); // Doclet 5 - no change to the content.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "4",
+                                      NO_CHANGE_BOX_COUNTS); // Doclet 7 - no change to the content.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "5",
+                                      NO_CHANGE_BOX_COUNTS); // Doclet 2 is moved here without changes to the content.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "6",
+                                      NO_CHANGE_BOX_COUNTS); // Doclet 8 - no change to the content.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "7",
+                                      NO_CHANGE_BOX_COUNTS); // Doclet 9 is inserted, so no content change.
+        verifyComputedDocletChangeBoxesCount(actualChangeBoxes, 5);
+        verifyTotalComputedChangeBoxesCount(actualChangeBoxes, 5);
+        verifyComputedChangeSpanCount(actualChangeSpans, 5);
+
+        // Perform ChangeSpan data verifications.
+        List<ChangeSpan> expectedChangeSpans =
+            getExpectedChangeSpans_ForTestCase_WithStructuralChanges_WithoutContentChanges();
+        VersionCompareTestUtils.verifyChangeSpans(expectedChangeSpans, actualChangeSpans, 5);
+    }
+
+    /**
+     * Test version compare with current and previous reviews containing structural changes
+     * between the current and previous reviews with changes to the doclet contents as well.
+     */
+    @Test
+    public void testVersionCompare_WithStructuralChanges_WithContentChanges() {
+        // Create doclet snapshot spec list for previous and current review instances.
+        Object[][] previousReviewDocletSpecList = new Object[][] { // Previous review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_DATA }, // Doclet 1
+                { DOCLET2_NAME, DOCLET2_DATA }, // Doclet 2
+                { DOCLET3_NAME, DOCLET3_DATA }, // Doclet 3
+                { DOCLET5_NAME, DOCLET5_DATA }, // Doclet 5
+                { DOCLET6_NAME, DOCLET6_DATA }, // Doclet 6
+                { DOCLET7_NAME, DOCLET7_DATA }, // Doclet 7
+                { DOCLET8_NAME, DOCLET8_DATA } // Doclet 8
+                } ;
+        Object[][] currentReviewDocletSpecList = new Object[][] { // Current review doclet snapshot spec list
+                { DOCLET1_NAME, DOCLET1_MODIFIED_DATA }, // Doclet 1
+                { DOCLET3_NAME, DOCLET3_MODIFIED_DATA }, // Doclet 3
+                // Doclet 4 will be added here.
+                { DOCLET5_NAME, DOCLET5_MODIFIED_DATA }, // Doclet 5
+                // Doclet 6 will be deleted from here.
+                { DOCLET7_NAME, DOCLET7_MODIFIED_DATA }, // Doclet 7
+                { DOCLET2_NAME, DOCLET2_MODIFIED_DATA }, // Doclet 2 will be moved here.
+                { DOCLET8_NAME, DOCLET8_MODIFIED_DATA } // Doclet 8
+                // Doclet 9 will be added here.
+                } ;
+        // Insert doclets in the current review instance.
+        Object[][] currentReviewInsertDocletSpecList = new Object[][] { // Insert doclet spec list
+                { DOCLET4_NAME, DOCLET4_MODIFIED_DATA, DOCLET5_NAME }, // Insert Doclet 4 before Doclet 5
+                { DOCLET9_NAME, DOCLET9_MODIFIED_DATA, null } // Insert Doclet 9 at the end of the review.
+                } ;
+
+        // Create and setup report package for this testcase.
+        createAndSetupReportPackage(previousReviewDocletSpecList);
+        updateDoclets(currentReviewDocletSpecList, false);
+        insertDoclets(currentReviewInsertDocletSpecList);
+        // For some reason Doclet 4 is not getting inserted before Doclet 5, so moving it before the Doclet 5.
+        moveDoclet(DOCLET4_NAME, 3);
+        moveDoclet(DOCLET2_NAME, 6);
+        deleteDoclet(DOCLET6_NAME);
+        startCurrentReviewCycle();
+
+        // Run the testcase.
+        PdfVersionCompare pdfVersionCompare = createPdfVersionCompare();
+        List<ChangeBox> actualChangeBoxes = getChangeBoxes(pdfVersionCompare);
+        List<ChangeSpan> actualChangeSpans = pdfVersionCompare.getChangeSpans();
+
+        // Perform ChangeBox and ChangeSpan count verifications.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "0", DOCLET1_EXPECTED_CHANGE_BOX_COUNTS); // Doclet 1
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "1", DOCLET3_EXPECTED_CHANGE_BOX_COUNTS); // Doclet 3
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "2",
+                                      NO_CHANGE_BOX_COUNTS); // Doclet 4 is inserted, so no content change.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "3", DOCLET5_EXPECTED_CHANGE_BOX_COUNTS); // Doclet 5
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "4", DOCLET7_EXPECTED_CHANGE_BOX_COUNTS); // Doclet 7
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "5",
+                                      DOCLET2_EXPECTED_CHANGE_BOX_COUNTS); // Doclet 2 is moved here with changes to the content.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "6", DOCLET8_EXPECTED_CHANGE_BOX_COUNTS); // Doclet 8
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "7",
+                                      NO_CHANGE_BOX_COUNTS); // Doclet 9 is inserted, so no content change.
+        verifyComputedDocletChangeBoxesCount(actualChangeBoxes, 5);
+        verifyTotalComputedChangeBoxesCount(actualChangeBoxes, 45);
+        verifyComputedChangeSpanCount(actualChangeSpans, 26);
+
+        // Perform ChangeSpan data verifications.
+        List<ChangeSpan> expectedChangeSpans =
+            getExpectedChangeSpans_ForTestCase_WithStructuralChanges_WithContentChanges();
+        VersionCompareTestUtils.verifyChangeSpans(expectedChangeSpans, actualChangeSpans, 26);
+    }
+
+    /**
+     * Test version compare with current and previous reviews containing textual and hidden image changes.
+     * In this scenario, the current review contains some hidden images.
+     * This test will ensure when we compare these two reviews then none of the change box generated
+     * have image id for hidden images.
+     * <p>
+     * Its added for Bug# 24798260 - NLS:SERVICE ERROR WHEN CLICKING 'ENABLE REVIEW COMPARE'.
+     */
+    @Test
+    public void testVersionCompare_WithDocletHaivingHiddenImages() {
+        // Create doclet snapshot spec list for previous and current review instances.
+        Object[][] previousReviewDocletSpecList = new Object[][] { // Previous review doclet snapshot spec list
+                { DOCLET10_NAME, DOCLET10_DATA } // Doclet 0
+                } ;
+        Object[][] currentReviewDocletSpecList = new Object[][] { // Current review doclet snapshot spec list
+                { DOCLET10_NAME, DOCLET10_MODIFIED_DATA } // Doclet 0
+                } ;
+
+        // Create and setup report package for this testcase.
+        createAndSetupReportPackage(previousReviewDocletSpecList);
+        updateDoclets(currentReviewDocletSpecList, true);
+
+        // Run the testcase.
+        PdfVersionCompare pdfVersionCompare = createPdfVersionCompare();
+        List<ChangeBox> actualChangeBoxes = getChangeBoxes(pdfVersionCompare);
+        List<ChangeSpan> actualChangeSpans = pdfVersionCompare.getChangeSpans();
+
+        // Perform ChangeBox and ChangeSpan count verifications.
+        verifyComputedChangeBoxCounts(actualChangeBoxes, "0", DOCLET10_EXPECTED_CHANGE_BOX_COUNTS); // Doclet 0
+
+        verifyComputedDocletChangeBoxesCount(actualChangeBoxes, 0);
+        verifyTotalComputedChangeBoxesCount(actualChangeBoxes, 26);
+        verifyComputedChangeSpanCount(actualChangeSpans, 26);
+
+        // Perform ChangeSpan data verifications.
+        List<ChangeSpan> expectedChangeSpans =
+            getExpectedChangeSpans_ForTestCase_WithContentChanges_WithHiddenImagesInCurrentReview();
+        VersionCompareTestUtils.verifyChangeSpans(expectedChangeSpans, actualChangeSpans, 26);
+    }
+}
