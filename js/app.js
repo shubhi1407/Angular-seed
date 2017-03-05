@@ -1,7 +1,7 @@
 var app = angular.module('myApp', []);
 app.controller('listCtrl', function ($scope, userService) {
 
-    
+  //added comment  
    userService.getAllUsers()
     .then(function (response) {
         console.log(response);
